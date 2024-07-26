@@ -1,24 +1,143 @@
 const std = @import("std");
 
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // don't forget to flush!
+fn drawPixel(r: u32, g: u32, b: u32) !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print("\x1b[48;2;{d};{d};{d}m  \x1b[0m", .{ r, g, b });
 }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+const PPMVersion = enum { p3, p6 };
+
+const PPMHeader = struct {
+    version: PPMVersion,
+    max_color_value: u32,
+    width: u32,
+    height: u32,
+};
+
+pub fn main() !void {
+    const stdout_writer = std.io.getStdOut().writer();
+    var bw = std.io.bufferedWriter(stdout_writer);
+    const stdout = bw.writer();
+
+    var args_iter = std.process.args();
+    _ = args_iter.skip(); // ignore program name
+
+    const file_path = args_iter.next();
+    if (file_path) |fp| {
+        var file = std.fs.cwd().openFile(fp, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                try stdout.print("File not found\n", .{});
+                try bw.flush();
+                std.process.exit(0);
+            },
+            else => {
+                try stdout.print("Error opening file\n", .{});
+                try bw.flush();
+                std.process.exit(0);
+            },
+        };
+        defer file.close();
+
+        var buf_reader = std.io.bufferedReader(file.reader());
+        var in_stream = buf_reader.reader();
+
+        var buf: [128]u8 = undefined;
+        var header = try readPpmHeader(&in_stream, &buf);
+
+        switch (header.version) {
+            .p3 => try drawPpmV3(&in_stream, &buf, &header),
+            .p6 => try drawPpmV6(&in_stream, &buf, &header),
+        }
+    } else {
+        try stdout.print("Usage: ppm-monkey [file_path]", .{});
+    }
+
+    try bw.flush();
+}
+
+fn readPpmHeader(reader: anytype, buf: *[128]u8) !PPMHeader {
+    var header = PPMHeader{ .version = .p3, .max_color_value = 0, .width = 0, .height = 0 };
+
+    var values_read: u8 = 0;
+    while (values_read < 3) {
+        if (try reader.readUntilDelimiterOrEof(buf, '\n')) |line_buf| {
+            const line = std.mem.trim(u8, line_buf, " \t\r\n");
+            var split_line = std.mem.splitAny(u8, line, " ");
+            if (split_line.peek()) |peek_line| {
+                if (std.mem.startsWith(u8, peek_line, "P3")) {
+                    header.version = .p3;
+                    _ = split_line.next();
+                } else if (std.mem.startsWith(u8, peek_line, "P6")) {
+                    header.version = .p6;
+                    _ = split_line.next();
+                }
+            }
+
+            if (line.len == 0 or line[0] == '#') continue;
+
+            while (split_line.next()) |str_val| {
+                const trimmed_val = std.mem.trim(u8, str_val, " \t\r\n");
+                if (trimmed_val.len == 0 or trimmed_val[0] == '#') continue;
+                const val = try std.fmt.parseInt(u32, trimmed_val, 10);
+                switch (values_read) {
+                    0 => header.width = val,
+                    1 => header.height = val,
+                    2 => header.max_color_value = val,
+                    else => break,
+                }
+
+                values_read += 1;
+                if (values_read == 3) break;
+            }
+        } else {
+            break;
+        }
+    }
+    return header;
+}
+
+fn drawPpmV3(reader: anytype, buf: *[128]u8, ppmHeader: *PPMHeader) !void {
+    var y: u32 = 0;
+    while (y < ppmHeader.height) : (y += 1) {
+        var x: u32 = 0;
+        var tokenized_line: ?std.mem.TokenIterator(u8, .any) = null;
+
+        while (x < ppmHeader.width) {
+            if (tokenized_line == null or tokenized_line.?.peek() == null) {
+                const line = try reader.readUntilDelimiter(buf, '\n');
+                if (line[0] == '#') continue;
+                const trimmed_line = std.mem.trimLeft(u8, line, "\t");
+                tokenized_line = std.mem.tokenizeAny(u8, trimmed_line, " ");
+            }
+
+            const r = try std.fmt.parseInt(u32, tokenized_line.?.next() orelse return error.InvalidFormat, 10);
+            const g = try std.fmt.parseInt(u32, tokenized_line.?.next() orelse return error.InvalidFormat, 10);
+            const b = try std.fmt.parseInt(u32, tokenized_line.?.next() orelse return error.InvalidFormat, 10);
+
+            try drawPixel(r, g, b);
+
+            x += 1;
+        }
+        std.debug.print("\n", .{});
+    }
+}
+
+fn drawPpmV6(reader: anytype, buf: *[128]u8, ppmHeader: *PPMHeader) !void {
+    var y: u32 = 0;
+    while (y < ppmHeader.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < ppmHeader.width) : (x += 1) {
+            // Read 3 bytes directly into the buffer
+            const bytesRead = try reader.*.readAll(buf[0..3]);
+            if (bytesRead != 3) return error.UnexpectedEOF;
+
+            // Extract RGB values
+            const r = buf[0];
+            const g = buf[1];
+            const b = buf[2];
+
+            try drawPixel(r, g, b);
+        }
+        std.debug.print("\n", .{});
+    }
 }

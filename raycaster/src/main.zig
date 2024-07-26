@@ -3,8 +3,8 @@ const std = @import("std");
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
 
-    const imageWidth = 256;
-    const imageHeight = 256;
+    const imageWidth = 32;
+    const imageHeight = 32;
 
     const fImageWidth: f32 = @floatFromInt(imageWidth);
     const fImageHeight: f32 = @floatFromInt(imageHeight);
