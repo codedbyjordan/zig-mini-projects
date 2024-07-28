@@ -56,43 +56,42 @@ pub fn main() !void {
 }
 
 fn readPpmHeader(reader: anytype, buf: *[128]u8) !PPMHeader {
-    var header = PPMHeader{ .version = .p3, .max_color_value = 0, .width = 0, .height = 0 };
+    var header = PPMHeader{
+        .version = .p3,
+        .width = 0,
+        .height = 0,
+        .max_color_value = 0,
+    };
 
     var values_read: u8 = 0;
     while (values_read < 3) {
-        if (try reader.readUntilDelimiterOrEof(buf, '\n')) |line_buf| {
-            const line = std.mem.trim(u8, line_buf, " \t\r\n");
-            var split_line = std.mem.splitAny(u8, line, " ");
-            if (split_line.peek()) |peek_line| {
-                if (std.mem.startsWith(u8, peek_line, "P3")) {
-                    header.version = .p3;
-                    _ = split_line.next();
-                } else if (std.mem.startsWith(u8, peek_line, "P6")) {
-                    header.version = .p6;
-                    _ = split_line.next();
-                }
+        const line_buf = try reader.readUntilDelimiterOrEof(buf, '\n') orelse break;
+        const line = std.mem.trim(u8, line_buf, &std.ascii.whitespace);
+
+        if (line.len == 0 or line[0] == '#') continue;
+
+        var tokens = std.mem.tokenizeAny(u8, line, &std.ascii.whitespace);
+        while (tokens.next()) |token| {
+            if (token.len == 0 or token[0] == '#') continue;
+
+            if (values_read == 0 and (std.mem.eql(u8, token, "P3") or std.mem.eql(u8, token, "P6"))) {
+                header.version = if (token[1] == '3') .p3 else .p6;
+                continue;
             }
 
-            if (line.len == 0 or line[0] == '#') continue;
-
-            while (split_line.next()) |str_val| {
-                const trimmed_val = std.mem.trim(u8, str_val, " \t\r\n");
-                if (trimmed_val.len == 0 or trimmed_val[0] == '#') continue;
-                const val = try std.fmt.parseInt(u32, trimmed_val, 10);
-                switch (values_read) {
-                    0 => header.width = val,
-                    1 => header.height = val,
-                    2 => header.max_color_value = val,
-                    else => break,
-                }
-
-                values_read += 1;
-                if (values_read == 3) break;
+            const val = try std.fmt.parseUnsigned(u32, token, 10);
+            switch (values_read) {
+                0 => header.width = val,
+                1 => header.height = val,
+                2 => header.max_color_value = val,
+                else => break,
             }
-        } else {
-            break;
+
+            values_read += 1;
+            if (values_read == 3) break;
         }
     }
+
     return header;
 }
 
