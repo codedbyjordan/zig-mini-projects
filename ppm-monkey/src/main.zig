@@ -49,7 +49,7 @@ pub fn main() !void {
             .p6 => try drawPpmV6(&in_stream, &buf, &header),
         }
     } else {
-        try stdout.print("Usage: ppm-monkey [file_path]", .{});
+        try stdout.print("Usage: ppm-monkey [file_path]\n", .{});
     }
 
     try bw.flush();
